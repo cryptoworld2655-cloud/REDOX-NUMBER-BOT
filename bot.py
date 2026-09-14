@@ -47,7 +47,7 @@ PANELS_FILE = "panels.json"
 SERVICES_FILE = "services.json"
 ADMIN_DB_FILE = "admin_db.json"
 OWNER_ID = "6423903661" # Change this ID to your main Admin ID
-TELEGRAM_TOKEN = "8791604524:AAH1LQur8mhVvPDCjm5KxbqjMQtS-jcIT00"  # আপনার টেলিগ্রাম বট টোকেনটি এখানে দিন
+TELEGRAM_TOKEN = "8987687367:AAFxTX9URvsKOC9PI3GuFtIHBg4Yr6vttsQ"  # আপনার টেলিগ্রাম বট টোকেনটি এখানে দিন
 
 # Admin DB Logic (Tracks Users and Today's Numbers)
 def load_admin_db():
@@ -1343,10 +1343,13 @@ def buy_number_activation(panel, range_val):
                         break
 
     try:
-        # Standard SMS activation API format (yesms / hadi / shark compatible)
+        # Use panel-configured Get Number URL if set (e.g. ZENEX: /v1/getnum),
+        # otherwise fall back to the legacy standard path.
+        gn_url = panel.get("getNumberUrl") or f"{base_url}/api/getNumber"
         resp = requests.get(
-            f"{base_url}/api/getNumber",
-            params={"token": token, "service": service_code, "country": country_code},
+            gn_url,
+            params={"token": token, "api_key": token, "service": service_code, "country": country_code},
+            headers={"Authorization": f"Bearer {token}"},
             timeout=20
         )
         try:
@@ -1354,10 +1357,10 @@ def buy_number_activation(panel, range_val):
         except Exception:
             return {"success": False, "message": f"Invalid API response: {resp.text[:200]}"}
 
-        status = str(data.get("status", ""))
-        if status == "1":
-            number = str(data.get("number", "")).replace("+", "").strip()
-            activation_id = str(data.get("activationId", data.get("id", "")))
+        status = str(data.get("status", data.get("success", "")))
+        if status in ("1", "True", "true"):
+            number = str(data.get("number", data.get("full_number", ""))).replace("+", "").strip()
+            activation_id = str(data.get("activationId", data.get("id", data.get("request_id", ""))))
             today = datetime.now().strftime("%Y-%m-%d")
             if admin_db.get("today_date") != today:
                 admin_db["today_date"] = today
@@ -1386,12 +1389,17 @@ def poll_activation_otp(panel, activation_id, number, buyer_chat_id, max_attempt
     base_url = panel.get("url", "").rstrip("/")
     logger.info(f"[{panel['name']}] OTP polling started for {number}, activation_id={activation_id}")
 
+    # Use panel-configured Get Message URL if set (e.g. ZENEX: /v1/numsuccess/info),
+    # otherwise fall back to the legacy standard path.
+    gm_url = panel.get("getMessageUrl") or f"{base_url}/api/getStatus"
+
     for attempt in range(max_attempts):
         time.sleep(10)
         try:
             resp = requests.get(
-                f"{base_url}/api/getStatus",
-                params={"token": token, "id": activation_id},
+                gm_url,
+                params={"token": token, "api_key": token, "id": activation_id, "request_id": activation_id},
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=15
             )
             try:
@@ -1400,9 +1408,9 @@ def poll_activation_otp(panel, activation_id, number, buyer_chat_id, max_attempt
                 continue
 
             status = str(data.get("status", ""))
+            sms_text = data.get("sms") or data.get("message") or data.get("otp") or data.get("code") or ""
 
-            if status == "2":  # OTP received
-                sms_text = data.get("sms", data.get("message", ""))
+            if status == "2" or (sms_text and status not in ("3", "6", "0", "")):  # OTP received
                 logger.info(f"[{panel['name']}] OTP received for {number}: {sms_text}")
                 process_and_send_sms(panel["name"], number, "", sms_text)
                 return
